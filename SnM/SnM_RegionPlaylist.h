@@ -43,10 +43,11 @@ public:
 // no other attributes (like a comment) because of the "auto-compacting" feature..
 class RgnPlaylistItem {
 public:
-	RgnPlaylistItem(int _rgnId=-1, int _cnt=1) : m_rgnId(_rgnId),m_cnt(_cnt) {}
+	RgnPlaylistItem(int _rgnId=-1, int _cnt=1, const char* _comment="") : m_rgnId(_rgnId), m_cnt(_cnt), m_comment(_comment) {}
 	bool IsValidIem() { return (m_rgnId>0 && m_cnt!=0 && GetMarkerRegionIndexFromId(NULL, m_rgnId)>=0); }
 	double GetPos() { if (m_rgnId>0) { double pos; if (EnumMarkerRegionById(NULL, m_rgnId, NULL, &pos, NULL, NULL, NULL, NULL)>=0) return pos; } return 0.0; }
 	int m_rgnId, m_cnt;
+	const char* m_comment;
 };
 
 class RegionPlaylist : public WDL_PtrList<RgnPlaylistItem> {
@@ -86,6 +87,7 @@ protected:
 	int OnItemSort(SWS_ListItem* _item1, SWS_ListItem* _item2);
 	void OnBeginDrag(SWS_ListItem* item);
 	WDL_PtrList<RgnPlaylistItem> m_draggedItems;
+	RgnPlaylistItem* currentPlstItem;
 };
 
 class RegionPlaylistWnd : public SWS_DockWnd

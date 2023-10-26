@@ -126,6 +126,14 @@ int g_oldStopprojlenPref = -1;
 int g_oldRepeatState = -1;
 
 
+const char* copyConstChar(const char* src) {
+	const size_t len = strlen(src);
+	char* tmp_filename = new char[len + 1];
+	strncpy(tmp_filename, src, len);
+	tmp_filename[len] = '\0'; // I'm paranoid, maybe someone has changed something in _filename :-)
+	return tmp_filename;
+}
+
 // _plId: -1 for the displayed/edited playlist
 RegionPlaylist* GetPlaylist(int _plId = -1) {
 	if (_plId < 0) _plId = g_pls.Get()->m_editId;
@@ -143,7 +151,7 @@ RegionPlaylist::RegionPlaylist(RegionPlaylist* _pl, const char* _name)
 	if (_pl)
 	{
 		for (int i=0; i<_pl->GetSize(); i++)
-			Add(new RgnPlaylistItem(_pl->Get(i)->m_rgnId, _pl->Get(i)->m_cnt));
+			Add(new RgnPlaylistItem(_pl->Get(i)->m_rgnId, _pl->Get(i)->m_cnt, _pl->Get(i)->m_comment));
 		if (!_name)
 			m_name.Set(_pl->m_name.Get());
 	}
@@ -259,6 +267,7 @@ int RegionPlaylist::GetGreaterMarkerRegion(double _pos)
 enum {
   COL_RGN=0,
   COL_RGN_NAME,
+  COL_RGN_COMMENT,
   COL_RGN_COUNT,
   COL_RGN_START,
   COL_RGN_END,
@@ -266,8 +275,9 @@ enum {
   COL_COUNT
 };
 
+//DMY: {iWidth}, {iType; // & 1 = editable, & 2 = clickable button}, {cLabel}, {iPos};
 // !WANT_LOCALIZE_STRINGS_BEGIN:sws_DLG_165
-static SWS_LVColumn s_playlistCols[] = { {50,2,"#"}, {150,1,"Name"}, {70,1,"Loop count"}, {50,2,"Start"}, {50,2,"End"}, {50,2,"Length"} };
+static SWS_LVColumn s_playlistCols[] = { {50,2,"#"}, {150,1,"Name"}, {150,1,"Comment"} , {70,1,"Loop count"}, {50,2,"Start"}, {50,2,"End"}, {50,2,"Length"} };
 // !WANT_LOCALIZE_STRINGS_END
 
 RegionPlaylistView::RegionPlaylistView(HWND hwndList, HWND hwndEdit)
@@ -311,6 +321,11 @@ void RegionPlaylistView::GetItemText(SWS_ListItem* item, int iCol, char* str, in
 				if (EnumMarkerRegionDescById(NULL, pItem->m_rgnId, str, iStrMax, SNM_REGION_MASK, false, true, false)<0 /* && *str */)
 					lstrcpyn(str, __LOCALIZE("Unknown region","sws_DLG_165"), iStrMax);
 				break;
+			case COL_RGN_COMMENT:
+			{
+				snprintf(str, iStrMax, "%s", pItem->m_comment);
+				break;
+			}
 			case COL_RGN_COUNT:
 				if (pItem->m_cnt < 0)
 					snprintf(str, iStrMax, "%s", UTF8_INFINITY);
@@ -369,6 +384,17 @@ void RegionPlaylistView::SetItemText(SWS_ListItem* item, int iCol, const char* s
 				}
 				break;
 			}
+			case COL_RGN_COMMENT:
+			{
+				bool isrgn; double pos, end; int num, col;
+				if (str && EnumMarkerRegionById(NULL, pItem->m_rgnId, &isrgn, &pos, &end, NULL, &num, &col) >= 0)
+				{
+					//color should be 0 to not change, or ColorToNative(r,g,b)|0x1000000, flags&1 to clear name
+					pItem->m_comment = copyConstChar(str);
+					Undo_OnStateChangeEx2(NULL, __LOCALIZE("Edit region comment", "sws_undo"), UNDO_STATE_MISCCFG, -1);
+				}
+				break;
+			}
 		}
 	}
 }
@@ -377,6 +403,8 @@ void RegionPlaylistView::OnItemClk(SWS_ListItem* item, int iCol, int iKeyState)
 {
 	if (RgnPlaylistItem* pItem = (RgnPlaylistItem*)item)
 	{
+		//DMY: Positions the cursor on the beggining of the region and set the current item
+		currentPlstItem = pItem;
 		if (g_optionFlags&2)
 			SetEditCurPos2(NULL, pItem->GetPos(), true, false); // move edit curdor, seek done below
 
@@ -861,7 +889,7 @@ void RegionPlaylistWnd::OnCommand(WPARAM wParam, LPARAM lParam)
 			RegionPlaylist p("temp");
 			int x=0;
 			while(RgnPlaylistItem* item = (RgnPlaylistItem*)GetListView()->EnumSelected(&x))
-				p.Add(new RgnPlaylistItem(item->m_rgnId, item->m_cnt));
+				p.Add(new RgnPlaylistItem(item->m_rgnId, item->m_cnt, item->m_comment));
 			AppendPasteCropPlaylist(&p, LOWORD(wParam) == PASTE_SEL_RGN_MSG ? PASTE_CURSOR : PASTE_PROJECT);
 			break;
 		}
@@ -2088,6 +2116,10 @@ static bool ProcessExtensionLine(const char *line, ProjectStateContext *ctx, boo
 						break;
 					else if (lp.getnumtokens() == 2)
 						playlist->Add(new RgnPlaylistItem(lp.gettoken_int(0), lp.gettoken_int(1)));
+					else if (lp.getnumtokens() == 3) {
+						const char * comment = copyConstChar(lp.gettoken_str(2));
+						playlist->Add(new RgnPlaylistItem(lp.gettoken_int(0), lp.gettoken_int(1), comment));
+					}
 				}
 				else
 					break;
@@ -2115,9 +2147,15 @@ static void SaveExtensionConfig(ProjectStateContext *ctx, bool isUndo, struct pr
 			confStr.Append("\n");
 		int iHeaderLen = confStr.GetLength();
 
-		for (int i=0; i < GetPlaylist(j)->GetSize(); i++)
-			if (RgnPlaylistItem* item = GetPlaylist(j)->Get(i))
-				confStr.AppendFormatted(128,"%d %d\n", item->m_rgnId, item->m_cnt);
+		for (int i = 0; i < GetPlaylist(j)->GetSize(); i++) {
+			if (RgnPlaylistItem* item = GetPlaylist(j)->Get(i)) {
+				char* result = new char[strlen(item->m_comment) + 2];
+				strcpy(result, "\"");
+				strcat(result, item->m_comment);
+				strcat(result, "\"");
+				confStr.AppendFormatted(128, "%d %d %s\n", item->m_rgnId, item->m_cnt, result);
+			}
+		}
 
 		// ignore empty playlists when saving but always take them into account for undo
 		if (isUndo || confStr.GetLength() > iHeaderLen) {
